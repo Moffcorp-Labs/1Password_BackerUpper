@@ -83,10 +83,9 @@ function Invoke-OpCli {
 
     $proc = [System.Diagnostics.Process]::Start($psi)
     try {
-        $stderrTask = $proc.StandardError.ReadToEndAsync()
         $stdout = $proc.StandardOutput.ReadToEnd()
+        $stderr = $proc.StandardError.ReadToEnd()
         $proc.WaitForExit()
-        $stderr = $stderrTask.GetAwaiter().GetResult()
         $exitCode = $proc.ExitCode
     }
     finally {
