@@ -87,7 +87,14 @@ function Invoke-OpCli {
 
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = 'op'
-    $psi.Arguments = $Arguments -join ' '
+    # Properly quote each argument to prevent injection via spaces/quotes
+    # in vault names, item titles, or service account names.
+    $escaped = $Arguments | ForEach-Object {
+        if ($_ -match '[\s"]') {
+            '"{0}"' -f ($_ -replace '"', '\"')
+        } else { $_ }
+    }
+    $psi.Arguments = $escaped -join ' '
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
     $psi.UseShellExecute = $false
@@ -99,9 +106,16 @@ function Invoke-OpCli {
     # names (common on Windows) and corrupt the ProcessStartInfo.
 
     $proc = [System.Diagnostics.Process]::Start($psi)
-    $stdout = $proc.StandardOutput.ReadToEnd()
-    $stderr = $proc.StandardError.ReadToEnd()
-    $proc.WaitForExit()
+    try {
+        # Read stderr asynchronously to prevent deadlock when stderr buffer fills
+        $stderrTask = $proc.StandardError.ReadToEndAsync()
+        $stdout = $proc.StandardOutput.ReadToEnd()
+        $proc.WaitForExit()
+        $stderr = $stderrTask.GetAwaiter().GetResult()
+    }
+    finally {
+        $proc.Dispose()
+    }
 
     if ($stderr) {
         Write-Log "op stderr: $stderr" -Level WARN
@@ -501,9 +515,6 @@ function New-EncryptedArchive {
         }
     }
 
-    # Remove unencrypted zip
-    Remove-Item $zipPath -Force
-
     $encSize = (Get-Item $encPath).Length
     Write-Log "Encrypted archive: $encPath ($([math]::Round($encSize / 1MB, 2)) MB)"
 
@@ -514,14 +525,21 @@ function New-EncryptedArchive {
     Write-Log "SHA-256: $($hash.Hash)"
 
     # Verify CMS envelope can be decoded (structure check, not decryption)
+    $verifyFs = $null
     try {
         $verifyBytes = New-Object byte[] 4
         $verifyFs = [System.IO.File]::OpenRead($encPath)
         $null = $verifyFs.Read($verifyBytes, 0, 4)
         $verifyLen = [BitConverter]::ToInt32($verifyBytes, 0)
+
+        if ($verifyLen -le 0 -or $verifyLen -gt 32KB) {
+            throw "CMS envelope length out of range ($verifyLen bytes). Archive may be corrupt."
+        }
+
         $verifyEnvelope = New-Object byte[] $verifyLen
         $null = $verifyFs.Read($verifyEnvelope, 0, $verifyLen)
         $verifyFs.Dispose()
+        $verifyFs = $null
 
         $verifyCms = New-Object System.Security.Cryptography.Pkcs.EnvelopedCms
         $verifyCms.Decode($verifyEnvelope)
@@ -531,6 +549,12 @@ function New-EncryptedArchive {
         Write-Log "Archive integrity: CMS envelope verification FAILED -- $_" -Level ERROR
         throw "Encrypted archive failed integrity check. Backup may be corrupt."
     }
+    finally {
+        if ($verifyFs) { $verifyFs.Dispose() }
+    }
+
+    # Remove unencrypted zip only after verification passes
+    Remove-Item $zipPath -Force
 
     return $encPath
 }
