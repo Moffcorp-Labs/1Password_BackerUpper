@@ -87,6 +87,7 @@ function Invoke-OpCli {
         $stdout = $proc.StandardOutput.ReadToEnd()
         $proc.WaitForExit()
         $stderr = $stderrTask.GetAwaiter().GetResult()
+        $exitCode = $proc.ExitCode
     }
     finally {
         $proc.Dispose()
@@ -95,7 +96,7 @@ function Invoke-OpCli {
     return [PSCustomObject]@{
         Output   = $stdout
         Error    = $stderr
-        ExitCode = $proc.ExitCode
+        ExitCode = $exitCode
     }
 }
 
