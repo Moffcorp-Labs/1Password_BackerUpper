@@ -1,0 +1,7 @@
+{
+  "BackupPath": "C:\\Backups\\1Password",
+  "CertificateThumbprint": "ABCDEF1234567890ABCDEF1234567890ABCDEF12",
+  "RetentionDays": 7,
+  "LogLevel": "INFO",
+  "RateLimitDelayMs": 100
+}
