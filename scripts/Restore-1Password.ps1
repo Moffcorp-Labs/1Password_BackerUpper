@@ -82,6 +82,45 @@ $script:LogPath = $null
 $script:CertImported = $false
 $script:CertThumbprint = $null
 
+# ─── Secure Temp Cleanup ──────────────────────────────────────────────────────
+
+function Remove-SecureTemp {
+    <#
+    .NOTES
+        Overwrites file contents with random data before deletion. On SSDs this
+        is best-effort due to wear-leveling -- the real security boundary is the
+        CMS encryption. The temp directory is the last line of defense.
+    #>
+    param(
+        [Parameter(Mandatory)]
+        [string]$Path
+    )
+
+    if (-not (Test-Path $Path)) { return }
+
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try {
+        Get-ChildItem -Path $Path -Recurse -File -ErrorAction SilentlyContinue | ForEach-Object {
+            try {
+                if ($_.Length -gt 0) {
+                    $bytes = [byte[]]::new($_.Length)
+                    $rng.GetBytes($bytes)
+                    [System.IO.File]::WriteAllBytes($_.FullName, $bytes)
+                    [Array]::Clear($bytes, 0, $bytes.Length)
+                }
+            }
+            catch {
+                # Best-effort wipe -- continue even if individual file fails
+            }
+        }
+    }
+    finally {
+        $rng.Dispose()
+    }
+
+    Remove-Item -Path $Path -Recurse -Force
+}
+
 # ─── Logging ───────────────────────────────────────────────────────────────────
 
 function Write-Log {
@@ -118,16 +157,27 @@ function Invoke-OpCli {
 
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = 'op'
-    $psi.Arguments = $Arguments -join ' '
+    $escaped = $Arguments | ForEach-Object {
+        if ($_ -match '[\s"]') {
+            '"{0}"' -f ($_ -replace '"', '\"')
+        } else { $_ }
+    }
+    $psi.Arguments = $escaped -join ' '
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
 
     $proc = [System.Diagnostics.Process]::Start($psi)
-    $stdout = $proc.StandardOutput.ReadToEnd()
-    $stderr = $proc.StandardError.ReadToEnd()
-    $proc.WaitForExit()
+    try {
+        $stderrTask = $proc.StandardError.ReadToEndAsync()
+        $stdout = $proc.StandardOutput.ReadToEnd()
+        $proc.WaitForExit()
+        $stderr = $stderrTask.GetAwaiter().GetResult()
+    }
+    finally {
+        $proc.Dispose()
+    }
 
     return [PSCustomObject]@{
         Output   = $stdout
@@ -207,6 +257,24 @@ if (-not $OutputPath) {
     $OutputPath = Join-Path (Get-Location) "restore_$(Get-Date -Format 'yyyyMMdd_HHmmss')"
 }
 New-Item -ItemType Directory -Path $OutputPath -Force | Out-Null
+
+# Lock down output directory to current user only (contains decrypted secrets)
+try {
+    $acl = Get-Acl $OutputPath
+    $acl.SetAccessRuleProtection($true, $false)  # Disable inheritance, remove inherited rules
+    $rule = New-Object System.Security.AccessControl.FileSystemAccessRule(
+        [System.Security.Principal.WindowsIdentity]::GetCurrent().Name,
+        'FullControl',
+        'ContainerInherit,ObjectInherit',
+        'None',
+        'Allow'
+    )
+    $acl.AddAccessRule($rule)
+    Set-Acl -Path $OutputPath -AclObject $acl
+}
+catch {
+    Write-Warning "Could not restrict ACL on output directory. Ensure only authorized users can access: $OutputPath"
+}
 
 # Set up restore log
 $script:LogPath = Join-Path $OutputPath "restore_$(Get-Date -Format 'yyyyMMdd_HHmmss').log"
@@ -341,7 +409,15 @@ try {
     Write-Host "Extracting to: $OutputPath"
     Write-Log "Extracting to: $OutputPath"
     Expand-Archive -Path $zipPath -DestinationPath $OutputPath -Force
-    # Zip is inside RestoreTempDir -- cleaned up in outer finally
+
+    # Zip-slip validation: ensure no extracted file escapes the output directory
+    $resolvedOutput = [System.IO.Path]::GetFullPath($OutputPath).TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
+    Get-ChildItem -Path $OutputPath -Recurse -Force | ForEach-Object {
+        $resolvedItem = [System.IO.Path]::GetFullPath($_.FullName)
+        if (-not $resolvedItem.StartsWith($resolvedOutput, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Zip-slip detected: entry '$($_.FullName)' resolves outside output directory. Archive may be tampered."
+        }
+    }
 
     # ─── Read Manifest ─────────────────────────────────────────────────────────
 
@@ -551,9 +627,10 @@ finally {
         }
     }
 
-    # Clean up secure temp directory (contains decrypted zip + any template files)
+    # Securely wipe temp directory (contains decrypted zip + any template files)
     if ($script:RestoreTempDir -and (Test-Path $script:RestoreTempDir -ErrorAction SilentlyContinue)) {
-        Remove-Item -Path $script:RestoreTempDir -Recurse -Force -ErrorAction SilentlyContinue
+        try { Remove-SecureTemp -Path $script:RestoreTempDir }
+        catch { Remove-Item -Path $script:RestoreTempDir -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }
 

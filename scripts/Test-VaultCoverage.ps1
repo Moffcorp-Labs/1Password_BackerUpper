@@ -35,16 +35,27 @@ function Invoke-OpCli {
 
     $psi = New-Object System.Diagnostics.ProcessStartInfo
     $psi.FileName = 'op'
-    $psi.Arguments = $Arguments -join ' '
+    $escaped = $Arguments | ForEach-Object {
+        if ($_ -match '[\s"]') {
+            '"{0}"' -f ($_ -replace '"', '\"')
+        } else { $_ }
+    }
+    $psi.Arguments = $escaped -join ' '
     $psi.RedirectStandardOutput = $true
     $psi.RedirectStandardError = $true
     $psi.UseShellExecute = $false
     $psi.CreateNoWindow = $true
 
     $proc = [System.Diagnostics.Process]::Start($psi)
-    $stdout = $proc.StandardOutput.ReadToEnd()
-    $stderr = $proc.StandardError.ReadToEnd()
-    $proc.WaitForExit()
+    try {
+        $stderrTask = $proc.StandardError.ReadToEndAsync()
+        $stdout = $proc.StandardOutput.ReadToEnd()
+        $proc.WaitForExit()
+        $stderr = $stderrTask.GetAwaiter().GetResult()
+    }
+    finally {
+        $proc.Dispose()
+    }
 
     return [PSCustomObject]@{
         Output   = $stdout
