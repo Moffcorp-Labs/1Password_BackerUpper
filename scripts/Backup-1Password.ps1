@@ -107,11 +107,9 @@ function Invoke-OpCli {
 
     $proc = [System.Diagnostics.Process]::Start($psi)
     try {
-        # Read stderr asynchronously to prevent deadlock when stderr buffer fills
-        $stderrTask = $proc.StandardError.ReadToEndAsync()
         $stdout = $proc.StandardOutput.ReadToEnd()
+        $stderr = $proc.StandardError.ReadToEnd()
         $proc.WaitForExit()
-        $stderr = $stderrTask.GetAwaiter().GetResult()
         $exitCode = $proc.ExitCode
     }
     finally {
