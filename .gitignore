@@ -1,0 +1,37 @@
+# Secrets & credentials
+*.key
+*.pem
+*.pfx
+*.p12
+*.crt
+*.cer
+credentials*
+secret*
+*.env
+.env.*
+!.env.example
+
+# 1Password exports / backups
+*.1pux
+*.1pif
+*.csv
+*.json
+!config/*.example.json
+!package.json
+!package-lock.json
+
+# Config with real values
+config/backup-config.json
+
+# macOS
+.DS_Store
+._*
+
+# PowerShell
+*.log
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
